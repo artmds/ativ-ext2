@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:fl_chart/fl_chart.dart';
 
 import 'package:ativ_ext2/main.dart';
 
@@ -68,6 +69,68 @@ void main() {
     expect(find.text('Fone novo'), findsOneWidget);
     expect(find.textContaining('Disponível em'), findsOneWidget);
     expect(find.text('Registrar como gasto'), findsNothing);
+  });
+
+  testWidgets('shows financial and carbon charts in monthly reports', (
+    tester,
+  ) async {
+    await tester.pumpWidget(const MyApp());
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Novo gasto'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextFormField).first, '50,00');
+    await tester.tap(find.text('Salvar lançamento'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Relatórios'));
+    await tester.pumpAndSettle();
+
+    await tester.scrollUntilVisible(
+      find.text('Gastos por categoria'),
+      300,
+      scrollable: find.byType(Scrollable).last,
+    );
+    expect(find.byType(PieChart), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('Necessidade x impulso'),
+      300,
+      scrollable: find.byType(Scrollable).last,
+    );
+    expect(find.byType(BarChart), findsWidgets);
+    expect(find.text('Necessidade x impulso'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('Pegada de carbono'),
+      300,
+      scrollable: find.byType(Scrollable).last,
+    );
+    expect(find.byType(BarChart), findsWidgets);
+    expect(find.text('Pegada de carbono'), findsOneWidget);
+  });
+
+  testWidgets('records conscious savings in the monthly report', (
+    tester,
+  ) async {
+    await tester.pumpWidget(const MyApp());
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Relatórios'));
+    await tester.pumpAndSettle();
+
+    await tester.scrollUntilVisible(
+      find.text('Dinheiro economizado com consumo consciente'),
+      300,
+      scrollable: find.byType(Scrollable).last,
+    );
+    await tester.tap(find.byTooltip('Registrar economia consciente'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextFormField).first, '25,00');
+    await tester.enterText(
+      find.byType(TextFormField).last,
+      'Almoço preparado em casa',
+    );
+    await tester.tap(find.text('Salvar economia'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('R\$ 25,00'), findsWidgets);
+    expect(find.text('Almoço preparado em casa'), findsOneWidget);
   });
 
   testWidgets('alerts when an expense crosses both budget thresholds', (

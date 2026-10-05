@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -125,6 +126,39 @@ class _PurchaseWish {
   );
 }
 
+class _ConsciousSaving {
+  const _ConsciousSaving({
+    required this.id,
+    required this.amount,
+    required this.description,
+    required this.type,
+    required this.date,
+  });
+
+  final String id;
+  final double amount;
+  final String description;
+  final String type;
+  final DateTime date;
+
+  Map<String, Object> toJson() => {
+    'id': id,
+    'amount': amount,
+    'description': description,
+    'type': type,
+    'date': date.toIso8601String(),
+  };
+
+  factory _ConsciousSaving.fromJson(Map<String, dynamic> json) =>
+      _ConsciousSaving(
+        id: json['id'] as String,
+        amount: (json['amount'] as num).toDouble(),
+        description: json['description'] as String,
+        type: json['type'] as String,
+        date: DateTime.parse(json['date'] as String),
+      );
+}
+
 class ExpenseDashboard extends StatefulWidget {
   const ExpenseDashboard({
     super.key,
@@ -143,11 +177,13 @@ class _ExpenseDashboardState extends State<ExpenseDashboard> {
   static const _expensesKey = 'raiz.expenses.v1';
   static const _budgetsKey = 'raiz.budgets.v1';
   static const _wishesKey = 'raiz.purchase_wishes.v1';
+  static const _savingsKey = 'raiz.conscious_savings.v1';
 
   final _notifications = FlutterLocalNotificationsPlugin();
   final Map<String, double> _budgets = Map.of(_defaultBudgets);
   List<_Expense> _expenses = [];
   List<_PurchaseWish> _wishes = [];
+  List<_ConsciousSaving> _savings = [];
   int _selectedTab = 0;
   bool _loading = true;
   Timer? _wishRefreshTimer;
@@ -174,6 +210,7 @@ class _ExpenseDashboardState extends State<ExpenseDashboard> {
       final expensesJson = await preferences.getString(_expensesKey);
       final budgetsJson = await preferences.getString(_budgetsKey);
       final wishesJson = await preferences.getString(_wishesKey);
+      final savingsJson = await preferences.getString(_savingsKey);
       if (expensesJson != null) {
         final decoded = jsonDecode(expensesJson) as List<dynamic>;
         _expenses = decoded
@@ -192,6 +229,14 @@ class _ExpenseDashboardState extends State<ExpenseDashboard> {
         final decoded = jsonDecode(wishesJson) as List<dynamic>;
         _wishes = decoded
             .map((item) => _PurchaseWish.fromJson(item as Map<String, dynamic>))
+            .toList();
+      }
+      if (savingsJson != null) {
+        final decoded = jsonDecode(savingsJson) as List<dynamic>;
+        _savings = decoded
+            .map(
+              (item) => _ConsciousSaving.fromJson(item as Map<String, dynamic>),
+            )
             .toList();
       }
     } catch (_) {
@@ -240,6 +285,10 @@ class _ExpenseDashboardState extends State<ExpenseDashboard> {
         _wishesKey,
         jsonEncode(_wishes.map((wish) => wish.toJson()).toList()),
       );
+      await preferences.setString(
+        _savingsKey,
+        jsonEncode(_savings.map((saving) => saving.toJson()).toList()),
+      );
     } catch (_) {
       if (mounted) _showMessage('Não foi possível salvar neste dispositivo.');
     }
@@ -259,6 +308,23 @@ class _ExpenseDashboardState extends State<ExpenseDashboard> {
   double get _carbonThisMonth => _expenses
       .where((expense) => _isCurrentMonth(expense.date))
       .fold(0, (total, expense) => total + _estimateCarbonKg(expense));
+
+  double get _carbonLastMonth {
+    final now = DateTime.now();
+    final startOfLastMonth = DateTime(now.year, now.month - 1);
+    final startOfThisMonth = DateTime(now.year, now.month);
+    return _expenses
+        .where(
+          (expense) =>
+              !expense.date.isBefore(startOfLastMonth) &&
+              expense.date.isBefore(startOfThisMonth),
+        )
+        .fold(0, (total, expense) => total + _estimateCarbonKg(expense));
+  }
+
+  double get _consciousSavingsThisMonth => _savings
+      .where((saving) => _isCurrentMonth(saving.date))
+      .fold(0, (total, saving) => total + saving.amount);
 
   double get _totalBudget =>
       _budgets.values.fold(0, (total, value) => total + value);
@@ -312,6 +378,21 @@ class _ExpenseDashboardState extends State<ExpenseDashboard> {
     if (title != null && title.trim().isNotEmpty) {
       await _addWish(title.trim());
     }
+  }
+
+  Future<void> _showSavingForm() async {
+    final saving = await showDialog<_ConsciousSaving>(
+      context: context,
+      builder: (_) => const _SavingEntryDialog(),
+    );
+    if (saving == null || !mounted) return;
+    setState(() => _savings = [saving, ..._savings]);
+    await _persistData();
+  }
+
+  Future<void> _removeSaving(_ConsciousSaving saving) async {
+    setState(() => _savings.removeWhere((item) => item.id == saving.id));
+    await _persistData();
   }
 
   Future<void> _showExpenseForm({
@@ -635,6 +716,34 @@ class _ExpenseDashboardState extends State<ExpenseDashboard> {
   }
 
   Widget _buildReports() {
+    final expensesThisMonth = _expenses
+        .where((expense) => _isCurrentMonth(expense.date))
+        .toList();
+    final categoryTotals = {
+      for (final category in _categories)
+        category: expensesThisMonth
+            .where((expense) => expense.category == category)
+            .fold<double>(0, (total, expense) => total + expense.amount),
+    };
+    final impulseTotal = expensesThisMonth
+        .where((expense) => !expense.isNecessary)
+        .fold<double>(0, (total, expense) => total + expense.amount);
+    final necessaryTotal = expensesThisMonth
+        .where((expense) => expense.isNecessary)
+        .fold<double>(0, (total, expense) => total + expense.amount);
+    final currentExpenses = expensesThisMonth.fold<double>(
+      0,
+      (total, expense) => total + expense.amount,
+    );
+    final chartColors = [
+      Theme.of(context).colorScheme.primary,
+      Theme.of(context).colorScheme.secondary,
+      Theme.of(context).colorScheme.tertiary,
+      Theme.of(context).colorScheme.error,
+      Colors.orange,
+      Colors.blue,
+      Colors.purple,
+    ];
     return ListView(
       padding: const EdgeInsets.fromLTRB(20, 8, 20, 112),
       children: [
@@ -711,6 +820,236 @@ class _ExpenseDashboardState extends State<ExpenseDashboard> {
           ),
         ),
         const SizedBox(height: 20),
+        _ReportChartCard(
+          title: 'Gastos por categoria',
+          subtitle: 'Distribuição dos gastos deste mês',
+          child: currentExpenses == 0
+              ? const _ChartEmptyState()
+              : Column(
+                  children: [
+                    SizedBox(
+                      height: 190,
+                      child: PieChart(
+                        PieChartData(
+                          sectionsSpace: 2,
+                          centerSpaceRadius: 34,
+                          sections: [
+                            for (
+                              var index = 0;
+                              index < _categories.length;
+                              index++
+                            )
+                              if (categoryTotals[_categories[index]]! > 0)
+                                PieChartSectionData(
+                                  value: categoryTotals[_categories[index]]!,
+                                  color: chartColors[index],
+                                  title:
+                                      '${(categoryTotals[_categories[index]]! / currentExpenses * 100).round()}%',
+                                  radius: 72,
+                                  titleStyle: Theme.of(context)
+                                      .textTheme
+                                      .labelSmall
+                                      ?.copyWith(
+                                        color: Colors.white,
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    ..._categories.indexed.map((entry) {
+                      final (index, category) = entry;
+                      final amount = categoryTotals[category]!;
+                      if (amount == 0) return const SizedBox.shrink();
+                      return _ChartLegendRow(
+                        color: chartColors[index],
+                        label: category,
+                        value: _formatCurrency(amount),
+                      );
+                    }),
+                  ],
+                ),
+        ),
+        const SizedBox(height: 14),
+        _ReportChartCard(
+          title: 'Necessidade x impulso',
+          subtitle: 'Valor em reais (R\$) classificado neste mês',
+          child: expensesThisMonth.isEmpty
+              ? const _ChartEmptyState()
+              : Column(
+                  children: [
+                    SizedBox(
+                      height: 190,
+                      child: BarChart(
+                        BarChartData(
+                          maxY:
+                              [
+                                impulseTotal,
+                                necessaryTotal,
+                                1,
+                              ].reduce((a, b) => a > b ? a : b) *
+                              1.15,
+                          barGroups: [
+                            _comparisonBarGroup(
+                              x: 0,
+                              value: impulseTotal,
+                              color: Theme.of(context).colorScheme.tertiary,
+                            ),
+                            _comparisonBarGroup(
+                              x: 1,
+                              value: necessaryTotal,
+                              color: Theme.of(context).colorScheme.primary,
+                            ),
+                          ],
+                          gridData: const FlGridData(show: true),
+                          borderData: FlBorderData(show: false),
+                          titlesData: FlTitlesData(
+                            topTitles: const AxisTitles(
+                              sideTitles: SideTitles(showTitles: false),
+                            ),
+                            rightTitles: const AxisTitles(
+                              sideTitles: SideTitles(showTitles: false),
+                            ),
+                            leftTitles: const AxisTitles(
+                              sideTitles: SideTitles(
+                                showTitles: true,
+                                reservedSize: 45,
+                              ),
+                            ),
+                            bottomTitles: AxisTitles(
+                              sideTitles: SideTitles(
+                                showTitles: true,
+                                getTitlesWidget: (value, meta) {
+                                  final label = switch (value.toInt()) {
+                                    0 => 'Impulso',
+                                    1 => 'Necessário',
+                                    _ => '',
+                                  };
+                                  return SideTitleWidget(
+                                    meta: meta,
+                                    child: Text(
+                                      label,
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .labelSmall,
+                                    ),
+                                  );
+                                },
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                    _ChartLegendRow(
+                      color: Theme.of(context).colorScheme.tertiary,
+                      label: 'Compras por impulso',
+                      value: _formatCurrency(impulseTotal),
+                    ),
+                    _ChartLegendRow(
+                      color: Theme.of(context).colorScheme.primary,
+                      label: 'Compras necessárias',
+                      value: _formatCurrency(necessaryTotal),
+                    ),
+                  ],
+                ),
+        ),
+        const SizedBox(height: 14),
+        _ReportChartCard(
+          title: 'Pegada de carbono',
+          subtitle: 'Estimativa em kg CO₂e: mês atual x anterior',
+          child: Column(
+            children: [
+              SizedBox(
+                height: 220,
+                child: BarChart(
+                  BarChartData(
+                    maxY:
+                        [
+                          _carbonThisMonth,
+                          _carbonLastMonth,
+                          1,
+                        ].reduce((a, b) => a > b ? a : b) *
+                        1.2,
+                    barGroups: [
+                      _comparisonBarGroup(
+                        x: 0,
+                        value: _carbonLastMonth,
+                        color: Theme.of(context).colorScheme.secondary,
+                      ),
+                      _comparisonBarGroup(
+                        x: 1,
+                        value: _carbonThisMonth,
+                        color: Theme.of(context).colorScheme.primary,
+                      ),
+                    ],
+                    gridData: const FlGridData(show: true),
+                    borderData: FlBorderData(show: false),
+                    titlesData: FlTitlesData(
+                      topTitles: const AxisTitles(
+                        sideTitles: SideTitles(showTitles: false),
+                      ),
+                      rightTitles: const AxisTitles(
+                        sideTitles: SideTitles(showTitles: false),
+                      ),
+                      leftTitles: const AxisTitles(
+                        sideTitles: SideTitles(
+                          showTitles: true,
+                          reservedSize: 42,
+                        ),
+                      ),
+                      bottomTitles: AxisTitles(
+                        sideTitles: SideTitles(
+                          showTitles: true,
+                          getTitlesWidget: (value, meta) {
+                            final label = switch (value.toInt()) {
+                              0 => _shortMonthLabel(
+                                DateTime(
+                                  DateTime.now().year,
+                                  DateTime.now().month - 1,
+                                ),
+                              ),
+                              1 => _shortMonthLabel(DateTime.now()),
+                              _ => '',
+                            };
+                            return SideTitleWidget(
+                              meta: meta,
+                              child: Text(
+                                label,
+                                style: Theme.of(context).textTheme.labelSmall,
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              _ChartLegendRow(
+                color: Theme.of(context).colorScheme.secondary,
+                label: 'Mês anterior',
+                value: '${_formatCarbon(_carbonLastMonth)} kg CO₂e',
+              ),
+              _ChartLegendRow(
+                color: Theme.of(context).colorScheme.primary,
+                label: 'Mês atual',
+                value: '${_formatCarbon(_carbonThisMonth)} kg CO₂e',
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 14),
+        _buildConsciousSavingsReport(),
+        const SizedBox(height: 14),
+        _buildPersonalizedTips(
+          expensesThisMonth: expensesThisMonth,
+          impulseTotal: impulseTotal,
+          currentExpenses: currentExpenses,
+        ),
+        const SizedBox(height: 20),
         ..._categories.map(
           (category) => _BudgetRow(
             category: category,
@@ -720,6 +1059,172 @@ class _ExpenseDashboardState extends State<ExpenseDashboard> {
           ),
         ),
       ],
+    );
+  }
+
+  BarChartGroupData _comparisonBarGroup({
+    required int x,
+    required double value,
+    required Color color,
+  }) => BarChartGroupData(
+    x: x,
+    barRods: [
+      BarChartRodData(
+        toY: value,
+        color: color,
+        width: 30,
+        borderRadius: BorderRadius.circular(5),
+      ),
+    ],
+  );
+
+  Widget _buildConsciousSavingsReport() {
+    final currentMonthSavings = _savings
+        .where((saving) => _isCurrentMonth(saving.date))
+        .toList();
+    return _ReportChartCard(
+      title: 'Dinheiro economizado com consumo consciente',
+      subtitle: 'Valores informados ao registrar uma economia',
+      trailing: IconButton.filledTonal(
+        tooltip: 'Registrar economia consciente',
+        onPressed: _showSavingForm,
+        icon: const Icon(Icons.add),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            _formatCurrency(_consciousSavingsThisMonth),
+            style: Theme.of(context).textTheme.headlineSmall
+                ?.copyWith(fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Registre a diferença que deixou de gastar ao evitar um impulso ou escolher uma alternativa consciente. O app não presume valores que não foram informados.',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+          if (currentMonthSavings.isNotEmpty) ...[
+            const SizedBox(height: 14),
+            ...currentMonthSavings
+                .take(5)
+                .map(
+                  (saving) => ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    dense: true,
+                    title: Text(
+                      saving.description,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    subtitle: Text(
+                      '${saving.type} · ${_formatDate(saving.date)}',
+                    ),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(_formatCurrency(saving.amount)),
+                        IconButton(
+                          tooltip: 'Remover economia',
+                          onPressed: () => _removeSaving(saving),
+                          icon: const Icon(Icons.delete_outline),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPersonalizedTips({
+    required List<_Expense> expensesThisMonth,
+    required double impulseTotal,
+    required double currentExpenses,
+  }) {
+    final tips = <String>[];
+    if (currentExpenses > 0) {
+      final impulseShare = impulseTotal / currentExpenses;
+      if (impulseShare >= 0.3) {
+        tips.add(
+          '${_formatPercent(impulseShare)} dos seus gastos foram classificados como compras por impulso. Antes de comprar, use a pausa de 72 horas para avaliar se o item continua importante.',
+        );
+      } else {
+        tips.add(
+          'Compras por impulso representam ${_formatPercent(impulseShare)} dos seus gastos neste mês. Continue registrando suas escolhas para acompanhar esse hábito.',
+        );
+      }
+      final sustainableTotal = expensesThisMonth
+          .where((expense) => expense.isSustainable)
+          .fold<double>(0, (total, expense) => total + expense.amount);
+      final sustainableShare = sustainableTotal / currentExpenses;
+      if (sustainableShare < 0.25) {
+        tips.add(
+          'Suas escolhas marcadas como sustentáveis representam ${_formatPercent(sustainableShare)} do total. Quando possível, considere transporte público, comércio local ou produtos usados.',
+        );
+      } else {
+        tips.add(
+          '${_formatPercent(sustainableShare)} dos seus gastos foram marcados como escolhas de menor pegada. Ótimo progresso — mantenha esse hábito.',
+        );
+      }
+    } else {
+      tips.add(
+        'Registre seus gastos para receber dicas baseadas nas categorias, escolhas e hábitos deste mês.',
+      );
+    }
+
+    final categoryWithHighestBudgetUsage =
+        _categories
+            .map((category) {
+              final spent = expensesThisMonth
+                  .where((expense) => expense.category == category)
+                  .fold<double>(0, (total, expense) => total + expense.amount);
+              final budget = _budgets[category] ?? 0;
+              return (
+                category: category,
+                spent: spent,
+                ratio: budget <= 0 ? 0.0 : spent / budget,
+              );
+            })
+            .where((entry) => entry.spent > 0)
+            .toList()
+          ..sort((a, b) => b.ratio.compareTo(a.ratio));
+    if (categoryWithHighestBudgetUsage.isNotEmpty) {
+      final topCategory = categoryWithHighestBudgetUsage.first;
+      if (topCategory.ratio >= 0.8) {
+        tips.add(
+          topCategory.category == 'Alimentação'
+              ? 'Você já usou ${_formatPercent(topCategory.ratio)} do limite de alimentação. Planejar as refeições da semana pode ajudar a reduzir gastos com refeições fora de casa.'
+              : 'Você já usou ${_formatPercent(topCategory.ratio)} do limite de ${topCategory.category.toLowerCase()}. Revise os próximos gastos dessa categoria para fechar o mês dentro do orçamento.',
+        );
+      }
+    }
+
+    return _ReportChartCard(
+      title: 'Dicas para seus hábitos',
+      subtitle: 'Recomendações calculadas com seus lançamentos deste mês',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          for (final tip in tips)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(
+                    Icons.lightbulb_outline,
+                    size: 20,
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(child: Text(tip)),
+                ],
+              ),
+            ),
+        ],
+      ),
     );
   }
 
@@ -1175,6 +1680,190 @@ class _WishEntryDialogState extends State<_WishEntryDialog> {
   );
 }
 
+class _SavingEntryDialog extends StatefulWidget {
+  const _SavingEntryDialog();
+
+  @override
+  State<_SavingEntryDialog> createState() => _SavingEntryDialogState();
+}
+
+class _SavingEntryDialogState extends State<_SavingEntryDialog> {
+  static const _savingTypes = [
+    'Compra por impulso evitada',
+    'Escolha sustentável',
+  ];
+
+  final _formKey = GlobalKey<FormState>();
+  final _amountController = TextEditingController();
+  final _descriptionController = TextEditingController();
+  String _type = _savingTypes.first;
+
+  @override
+  void dispose() {
+    _amountController.dispose();
+    _descriptionController.dispose();
+    super.dispose();
+  }
+
+  void _save() {
+    if (!_formKey.currentState!.validate()) return;
+    final now = DateTime.now();
+    Navigator.pop(
+      context,
+      _ConsciousSaving(
+        id: now.microsecondsSinceEpoch.toString(),
+        amount: _parseAmount(_amountController.text)!,
+        description: _descriptionController.text.trim(),
+        type: _type,
+        date: now,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('Registrar economia'),
+    content: Form(
+      key: _formKey,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          DropdownButtonFormField<String>(
+            initialValue: _type,
+            decoration: const InputDecoration(labelText: 'Tipo de economia'),
+            items: _savingTypes
+                .map((type) => DropdownMenuItem(value: type, child: Text(type)))
+                .toList(),
+            onChanged: (value) => setState(() => _type = value ?? _type),
+          ),
+          const SizedBox(height: 12),
+          TextFormField(
+            controller: _amountController,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            decoration: const InputDecoration(
+              labelText: 'Quanto você economizou?',
+              prefixText: 'R\$ ',
+            ),
+            validator: (value) {
+              final amount = _parseAmount(value ?? '');
+              if (amount == null || amount <= 0) {
+                return 'Informe um valor maior que zero.';
+              }
+              return null;
+            },
+          ),
+          const SizedBox(height: 12),
+          TextFormField(
+            controller: _descriptionController,
+            textCapitalization: TextCapitalization.sentences,
+            decoration: const InputDecoration(
+              labelText: 'Como você economizou?',
+              hintText: 'Ex.: preparei o almoço em casa',
+            ),
+            validator: (value) => value == null || value.trim().isEmpty
+                ? 'Descreva a escolha consciente.'
+                : null,
+          ),
+        ],
+      ),
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: const Text('Cancelar'),
+      ),
+      FilledButton(onPressed: _save, child: const Text('Salvar economia')),
+    ],
+  );
+}
+
+class _ReportChartCard extends StatelessWidget {
+  const _ReportChartCard({
+    required this.title,
+    required this.subtitle,
+    required this.child,
+    this.trailing,
+  });
+
+  final String title;
+  final String subtitle;
+  final Widget child;
+  final Widget? trailing;
+
+  @override
+  Widget build(BuildContext context) => Card(
+    child: Padding(
+      padding: const EdgeInsets.all(18),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  title,
+                  style: Theme.of(context).textTheme.titleMedium
+                      ?.copyWith(fontWeight: FontWeight.w700),
+                ),
+              ),
+              ?trailing,
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(subtitle, style: Theme.of(context).textTheme.bodySmall),
+          const SizedBox(height: 14),
+          child,
+        ],
+      ),
+    ),
+  );
+}
+
+class _ChartEmptyState extends StatelessWidget {
+  const _ChartEmptyState();
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.symmetric(vertical: 28),
+    child: Text(
+      'Ainda não há gastos neste mês para comparar.',
+      textAlign: TextAlign.center,
+      style: Theme.of(context).textTheme.bodyMedium,
+    ),
+  );
+}
+
+class _ChartLegendRow extends StatelessWidget {
+  const _ChartLegendRow({
+    required this.color,
+    required this.label,
+    required this.value,
+  });
+
+  final Color color;
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.symmetric(vertical: 3),
+    child: Row(
+      children: [
+        Container(
+          width: 10,
+          height: 10,
+          decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(label, style: Theme.of(context).textTheme.bodySmall),
+        ),
+        Text(value, style: Theme.of(context).textTheme.labelMedium),
+      ],
+    ),
+  );
+}
+
 class _BudgetEditorDialog extends StatefulWidget {
   const _BudgetEditorDialog({
     required this.category,
@@ -1464,6 +2153,27 @@ double? _parseAmount(String input) {
 }
 
 String _formatCarbon(double kg) => kg.toStringAsFixed(2).replaceAll('.', ',');
+
+String _formatPercent(double ratio) =>
+    '${(ratio * 100).round().clamp(0, 999)}%';
+
+String _shortMonthLabel(DateTime date) {
+  const months = [
+    'Jan',
+    'Fev',
+    'Mar',
+    'Abr',
+    'Mai',
+    'Jun',
+    'Jul',
+    'Ago',
+    'Set',
+    'Out',
+    'Nov',
+    'Dez',
+  ];
+  return months[date.month - 1];
+}
 
 String _formatRemaining(Duration duration) {
   final hours = duration.inHours;
