@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
@@ -33,6 +34,16 @@ const _paymentMethods = <String>[
   'Transferência',
 ];
 
+const _carbonKgPerRealByCategory = <String, double>{
+  'Alimentação': 0.15,
+  'Transporte': 0.25,
+  'Moradia': 0.08,
+  'Saúde': 0.08,
+  'Lazer': 0.10,
+  'Compras': 0.18,
+  'Outros': 0.10,
+};
+
 const _defaultBudgets = <String, double>{
   'Alimentação': 900,
   'Transporte': 450,
@@ -51,6 +62,8 @@ class _Expense {
     required this.category,
     required this.paymentMethod,
     this.note = '',
+    this.isNecessary = true,
+    this.isSustainable = false,
   });
 
   final String id;
@@ -59,6 +72,8 @@ class _Expense {
   final String category;
   final String paymentMethod;
   final String note;
+  final bool isNecessary;
+  final bool isSustainable;
 
   Map<String, Object> toJson() => {
     'id': id,
@@ -67,6 +82,8 @@ class _Expense {
     'category': category,
     'paymentMethod': paymentMethod,
     'note': note,
+    'isNecessary': isNecessary,
+    'isSustainable': isSustainable,
   };
 
   factory _Expense.fromJson(Map<String, dynamic> json) => _Expense(
@@ -76,6 +93,35 @@ class _Expense {
     category: json['category'] as String,
     paymentMethod: json['paymentMethod'] as String,
     note: json['note'] as String? ?? '',
+    isNecessary: json['isNecessary'] as bool? ?? true,
+    isSustainable: json['isSustainable'] as bool? ?? false,
+  );
+}
+
+class _PurchaseWish {
+  const _PurchaseWish({
+    required this.id,
+    required this.title,
+    required this.createdAt,
+  });
+
+  final String id;
+  final String title;
+  final DateTime createdAt;
+
+  DateTime get availableAt => createdAt.add(const Duration(hours: 72));
+  bool get isAvailable => !DateTime.now().isBefore(availableAt);
+
+  Map<String, String> toJson() => {
+    'id': id,
+    'title': title,
+    'createdAt': createdAt.toIso8601String(),
+  };
+
+  factory _PurchaseWish.fromJson(Map<String, dynamic> json) => _PurchaseWish(
+    id: json['id'] as String,
+    title: json['title'] as String,
+    createdAt: DateTime.parse(json['createdAt'] as String),
   );
 }
 
@@ -96,18 +142,30 @@ class ExpenseDashboard extends StatefulWidget {
 class _ExpenseDashboardState extends State<ExpenseDashboard> {
   static const _expensesKey = 'raiz.expenses.v1';
   static const _budgetsKey = 'raiz.budgets.v1';
+  static const _wishesKey = 'raiz.purchase_wishes.v1';
 
   final _notifications = FlutterLocalNotificationsPlugin();
   final Map<String, double> _budgets = Map.of(_defaultBudgets);
   List<_Expense> _expenses = [];
+  List<_PurchaseWish> _wishes = [];
   int _selectedTab = 0;
   bool _loading = true;
+  Timer? _wishRefreshTimer;
 
   @override
   void initState() {
     super.initState();
     _loadData();
     _initializeNotifications();
+    _wishRefreshTimer = Timer.periodic(const Duration(minutes: 1), (_) {
+      if (mounted && _selectedTab == 3) setState(() {});
+    });
+  }
+
+  @override
+  void dispose() {
+    _wishRefreshTimer?.cancel();
+    super.dispose();
   }
 
   Future<void> _loadData() async {
@@ -115,6 +173,7 @@ class _ExpenseDashboardState extends State<ExpenseDashboard> {
       final preferences = SharedPreferencesAsync();
       final expensesJson = await preferences.getString(_expensesKey);
       final budgetsJson = await preferences.getString(_budgetsKey);
+      final wishesJson = await preferences.getString(_wishesKey);
       if (expensesJson != null) {
         final decoded = jsonDecode(expensesJson) as List<dynamic>;
         _expenses = decoded
@@ -128,6 +187,12 @@ class _ExpenseDashboardState extends State<ExpenseDashboard> {
             _budgets[entry.key] = (entry.value as num).toDouble();
           }
         }
+      }
+      if (wishesJson != null) {
+        final decoded = jsonDecode(wishesJson) as List<dynamic>;
+        _wishes = decoded
+            .map((item) => _PurchaseWish.fromJson(item as Map<String, dynamic>))
+            .toList();
       }
     } catch (_) {
       // Storage may be unavailable in preview or test environments.
@@ -171,6 +236,10 @@ class _ExpenseDashboardState extends State<ExpenseDashboard> {
         jsonEncode(_expenses.map((expense) => expense.toJson()).toList()),
       );
       await preferences.setString(_budgetsKey, jsonEncode(_budgets));
+      await preferences.setString(
+        _wishesKey,
+        jsonEncode(_wishes.map((wish) => wish.toJson()).toList()),
+      );
     } catch (_) {
       if (mounted) _showMessage('Não foi possível salvar neste dispositivo.');
     }
@@ -187,12 +256,21 @@ class _ExpenseDashboardState extends State<ExpenseDashboard> {
       .where((expense) => _isCurrentMonth(expense.date))
       .fold(0, (total, expense) => total + expense.amount);
 
+  double get _carbonThisMonth => _expenses
+      .where((expense) => _isCurrentMonth(expense.date))
+      .fold(0, (total, expense) => total + _estimateCarbonKg(expense));
+
   double get _totalBudget =>
       _budgets.values.fold(0, (total, value) => total + value);
 
   bool _isCurrentMonth(DateTime date) {
     final now = DateTime.now();
     return date.year == now.year && date.month == now.month;
+  }
+
+  double _estimateCarbonKg(_Expense expense) {
+    final factor = _carbonKgPerRealByCategory[expense.category] ?? 0.10;
+    return expense.amount * factor * (expense.isSustainable ? 0.1 : 1);
   }
 
   Future<void> _addExpense(_Expense expense) async {
@@ -207,6 +285,50 @@ class _ExpenseDashboardState extends State<ExpenseDashboard> {
     }
     if (budget > 0 && previousSpent < budget && newSpent >= budget) {
       await _sendBudgetAlert(expense.category, reachedLimit: true);
+    }
+  }
+
+  Future<void> _addWish(String title) async {
+    final now = DateTime.now();
+    final wish = _PurchaseWish(
+      id: now.microsecondsSinceEpoch.toString(),
+      title: title,
+      createdAt: now,
+    );
+    setState(() => _wishes = [wish, ..._wishes]);
+    await _persistData();
+  }
+
+  Future<void> _removeWish(_PurchaseWish wish) async {
+    setState(() => _wishes.removeWhere((item) => item.id == wish.id));
+    await _persistData();
+  }
+
+  Future<void> _showWishForm() async {
+    final title = await showDialog<String>(
+      context: context,
+      builder: (_) => const _WishEntryDialog(),
+    );
+    if (title != null && title.trim().isNotEmpty) {
+      await _addWish(title.trim());
+    }
+  }
+
+  Future<void> _showExpenseForm({
+    String? initialNote,
+    _PurchaseWish? wishToRegister,
+  }) async {
+    if (wishToRegister != null && !wishToRegister.isAvailable) return;
+    final expense = await showModalBottomSheet<_Expense>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      showDragHandle: true,
+      builder: (context) => _ExpenseForm(initialNote: initialNote),
+    );
+    if (expense != null) {
+      await _addExpense(expense);
+      if (wishToRegister != null) await _removeWish(wishToRegister);
     }
   }
 
@@ -270,17 +392,6 @@ class _ExpenseDashboardState extends State<ExpenseDashboard> {
     if (saved == null || !mounted) return;
     setState(() => _budgets[category] = saved);
     await _persistData();
-  }
-
-  Future<void> _showExpenseForm() async {
-    final expense = await showModalBottomSheet<_Expense>(
-      context: context,
-      isScrollControlled: true,
-      useSafeArea: true,
-      showDragHandle: true,
-      builder: (context) => const _ExpenseForm(),
-    );
-    if (expense != null) await _addExpense(expense);
   }
 
   void _showMessage(String message) {
@@ -564,6 +675,41 @@ class _ExpenseDashboardState extends State<ExpenseDashboard> {
             ),
           ),
         ),
+        const SizedBox(height: 14),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(18),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Icon(Icons.co2_outlined),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        'Pegada estimada no mês',
+                        style: Theme.of(context).textTheme.titleMedium
+                            ?.copyWith(fontWeight: FontWeight.w700),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  '${_formatCarbon(_carbonThisMonth)} kg CO₂e',
+                  style: Theme.of(context).textTheme.headlineSmall
+                      ?.copyWith(fontWeight: FontWeight.w800),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  'Estimativa educativa por categoria e valor. Compras marcadas com menor pegada recebem uma redução; o resultado não substitui dados reais de produtos ou deslocamentos.',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ],
+            ),
+          ),
+        ),
         const SizedBox(height: 20),
         ..._categories.map(
           (category) => _BudgetRow(
@@ -613,7 +759,7 @@ class _ExpenseDashboardState extends State<ExpenseDashboard> {
                 ),
                 const SizedBox(height: 8),
                 const Text(
-                  'Antes de comprar, espere 24 horas e veja se a vontade continua.',
+                  'Anote um desejo e espere 72 horas. Se ainda fizer sentido, você poderá registrá-lo como gasto.',
                 ),
                 const SizedBox(height: 18),
                 Text(
@@ -624,6 +770,32 @@ class _ExpenseDashboardState extends State<ExpenseDashboard> {
             ),
           ),
         ),
+        const SizedBox(height: 16),
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                'Desejos de compra',
+                style: Theme.of(context).textTheme.titleLarge
+                    ?.copyWith(fontWeight: FontWeight.w700),
+              ),
+            ),
+            FilledButton.tonalIcon(
+              onPressed: _showWishForm,
+              icon: const Icon(Icons.add),
+              label: const Text('Adicionar'),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        if (_wishes.isEmpty)
+          const _EmptyState(
+            icon: Icons.hourglass_empty,
+            title: 'Nenhum desejo por enquanto',
+            message: 'Registre um item supérfluo para começar a contagem de 72 horas.',
+          )
+        else
+          ..._wishes.map(_wishCard),
         const SizedBox(height: 16),
         Card(
           child: Padding(
@@ -657,6 +829,53 @@ class _ExpenseDashboardState extends State<ExpenseDashboard> {
     );
   }
 
+  Widget _wishCard(_PurchaseWish wish) {
+    final remaining = wish.availableAt.difference(DateTime.now());
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.hourglass_bottom),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    wish.title,
+                    style: Theme.of(context).textTheme.titleMedium
+                        ?.copyWith(fontWeight: FontWeight.w700),
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Remover desejo',
+                  onPressed: () => _removeWish(wish),
+                  icon: const Icon(Icons.delete_outline),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            if (wish.isAvailable)
+              FilledButton.icon(
+                onPressed: () => _showExpenseForm(
+                  initialNote: wish.title,
+                  wishToRegister: wish,
+                ),
+                icon: const Icon(Icons.receipt_long_outlined),
+                label: const Text('Registrar como gasto'),
+              )
+            else
+              Text(
+                'Disponível em ${_formatRemaining(remaining)}',
+                style: Theme.of(context).textTheme.bodyMedium,
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _expenseTile(_Expense expense) => Card(
     margin: const EdgeInsets.symmetric(vertical: 4),
     child: ListTile(
@@ -675,7 +894,10 @@ class _ExpenseDashboardState extends State<ExpenseDashboard> {
         overflow: TextOverflow.ellipsis,
       ),
       subtitle: Text(
-        '${expense.category} · ${_formatDate(expense.date)} · ${expense.paymentMethod}',
+        '${expense.category} · ${_formatDate(expense.date)} · ${expense.paymentMethod}\n'
+        '${expense.isNecessary ? 'Necessária' : 'Compra por impulso'} · '
+        '${expense.isSustainable ? 'Menor pegada' : 'Pegada padrão'} · '
+        '${_formatCarbon(_estimateCarbonKg(expense))} kg CO₂e',
       ),
       trailing: Text(
         _formatCurrency(expense.amount),
@@ -687,7 +909,9 @@ class _ExpenseDashboardState extends State<ExpenseDashboard> {
 }
 
 class _ExpenseForm extends StatefulWidget {
-  const _ExpenseForm();
+  const _ExpenseForm({this.initialNote});
+
+  final String? initialNote;
 
   @override
   State<_ExpenseForm> createState() => _ExpenseFormState();
@@ -700,6 +924,14 @@ class _ExpenseFormState extends State<_ExpenseForm> {
   String _category = _categories.first;
   String _paymentMethod = _paymentMethods.first;
   DateTime _date = DateTime.now();
+  bool _isNecessary = true;
+  bool _isSustainable = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _noteController.text = widget.initialNote ?? '';
+  }
 
   @override
   void dispose() {
@@ -730,6 +962,8 @@ class _ExpenseFormState extends State<_ExpenseForm> {
         category: _category,
         paymentMethod: _paymentMethod,
         note: _noteController.text.trim(),
+        isNecessary: _isNecessary,
+        isSustainable: _isSustainable,
       ),
     );
   }
@@ -737,11 +971,14 @@ class _ExpenseFormState extends State<_ExpenseForm> {
   @override
   Widget build(BuildContext context) {
     final bottomInset = MediaQuery.viewInsetsOf(context).bottom;
+    final maxFormHeight = (MediaQuery.sizeOf(context).height - bottomInset - 64)
+        .clamp(0.0, MediaQuery.sizeOf(context).height);
     return Padding(
       padding: EdgeInsets.fromLTRB(20, 4, 20, 20 + bottomInset),
-      child: Form(
-        key: _formKey,
-        child: SingleChildScrollView(
+      child: ConstrainedBox(
+        constraints: BoxConstraints(maxHeight: maxFormHeight),
+        child: Form(
+          key: _formKey,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
@@ -751,69 +988,128 @@ class _ExpenseFormState extends State<_ExpenseForm> {
                     ?.copyWith(fontWeight: FontWeight.w700),
               ),
               const SizedBox(height: 18),
-              TextFormField(
-                controller: _amountController,
-                autofocus: true,
-                keyboardType: const TextInputType.numberWithOptions(
-                  decimal: true,
+              Expanded(
+                child: SingleChildScrollView(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      TextFormField(
+                        controller: _amountController,
+                        autofocus: true,
+                        keyboardType: const TextInputType.numberWithOptions(
+                          decimal: true,
+                        ),
+                        decoration: const InputDecoration(
+                          labelText: 'Valor',
+                          prefixText: 'R\$ ',
+                          hintText: '0,00',
+                        ),
+                        onChanged: (_) => setState(() {}),
+                        validator: (value) {
+                          final amount = _parseAmount(value ?? '');
+                          if (amount == null || amount <= 0) {
+                            return 'Informe um valor maior que zero.';
+                          }
+                          return null;
+                        },
+                      ),
+                      const SizedBox(height: 12),
+                      DropdownButtonFormField<String>(
+                        initialValue: _category,
+                        decoration: const InputDecoration(
+                          labelText: 'Categoria',
+                        ),
+                        items: _categories
+                            .map(
+                              (item) => DropdownMenuItem(
+                                value: item,
+                                child: Text(item),
+                              ),
+                            )
+                            .toList(),
+                        onChanged: (value) =>
+                            setState(() => _category = value ?? _category),
+                      ),
+                      const SizedBox(height: 12),
+                      DropdownButtonFormField<String>(
+                        initialValue: _paymentMethod,
+                        decoration: const InputDecoration(
+                          labelText: 'Forma de pagamento',
+                        ),
+                        items: _paymentMethods
+                            .map(
+                              (item) => DropdownMenuItem(
+                                value: item,
+                                child: Text(item),
+                              ),
+                            )
+                            .toList(),
+                        onChanged: (value) => setState(
+                          () => _paymentMethod = value ?? _paymentMethod,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      OutlinedButton.icon(
+                        onPressed: _selectDate,
+                        icon: const Icon(Icons.calendar_today_outlined),
+                        label: Text('Data: ${_formatDate(_date)}'),
+                      ),
+                      const SizedBox(height: 12),
+                      TextFormField(
+                        controller: _noteController,
+                        textCapitalization: TextCapitalization.sentences,
+                        decoration: const InputDecoration(
+                          labelText: 'Descrição (opcional)',
+                          hintText: 'Ex.: feira da semana',
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      SwitchListTile.adaptive(
+                        contentPadding: EdgeInsets.zero,
+                        title: const Text(
+                          'Essa compra era realmente necessária?',
+                        ),
+                        subtitle: const Text(
+                          'Desative se foi uma compra por impulso.',
+                        ),
+                        value: _isNecessary,
+                        onChanged: (value) =>
+                            setState(() => _isNecessary = value),
+                      ),
+                      SwitchListTile.adaptive(
+                        contentPadding: EdgeInsets.zero,
+                        title: const Text(
+                          'Possui selo/origem sustentável ou menor pegada?',
+                        ),
+                        subtitle: const Text(
+                          'Ex.: transporte público, bicicleta, mercado local ou item usado.',
+                        ),
+                        value: _isSustainable,
+                        onChanged: (value) =>
+                            setState(() => _isSustainable = value),
+                      ),
+                      const SizedBox(height: 8),
+                      Builder(
+                        builder: (context) {
+                          final amount =
+                              _parseAmount(_amountController.text) ?? 0;
+                          final factor =
+                              _carbonKgPerRealByCategory[_category] ?? 0.10;
+                          final estimate =
+                              amount * factor * (_isSustainable ? 0.1 : 1);
+                          return Text(
+                            'Pegada estimada: ${_formatCarbon(estimate)} kg CO₂e\n'
+                            'Estimativa educativa por categoria e valor.',
+                            style: Theme.of(context).textTheme.bodySmall,
+                          );
+                        },
+                      ),
+                      const SizedBox(height: 12),
+                    ],
+                  ),
                 ),
-                decoration: const InputDecoration(
-                  labelText: 'Valor',
-                  prefixText: 'R\$ ',
-                  hintText: '0,00',
-                ),
-                validator: (value) {
-                  final amount = _parseAmount(value ?? '');
-                  if (amount == null || amount <= 0) {
-                    return 'Informe um valor maior que zero.';
-                  }
-                  return null;
-                },
               ),
               const SizedBox(height: 12),
-              DropdownButtonFormField<String>(
-                initialValue: _category,
-                decoration: const InputDecoration(labelText: 'Categoria'),
-                items: _categories
-                    .map(
-                      (item) =>
-                          DropdownMenuItem(value: item, child: Text(item)),
-                    )
-                    .toList(),
-                onChanged: (value) =>
-                    setState(() => _category = value ?? _category),
-              ),
-              const SizedBox(height: 12),
-              DropdownButtonFormField<String>(
-                initialValue: _paymentMethod,
-                decoration: const InputDecoration(
-                  labelText: 'Forma de pagamento',
-                ),
-                items: _paymentMethods
-                    .map(
-                      (item) =>
-                          DropdownMenuItem(value: item, child: Text(item)),
-                    )
-                    .toList(),
-                onChanged: (value) =>
-                    setState(() => _paymentMethod = value ?? _paymentMethod),
-              ),
-              const SizedBox(height: 12),
-              OutlinedButton.icon(
-                onPressed: _selectDate,
-                icon: const Icon(Icons.calendar_today_outlined),
-                label: Text('Data: ${_formatDate(_date)}'),
-              ),
-              const SizedBox(height: 12),
-              TextFormField(
-                controller: _noteController,
-                textCapitalization: TextCapitalization.sentences,
-                decoration: const InputDecoration(
-                  labelText: 'Descrição (opcional)',
-                  hintText: 'Ex.: feira da semana',
-                ),
-              ),
-              const SizedBox(height: 20),
               FilledButton.icon(
                 onPressed: _save,
                 icon: const Icon(Icons.check),
@@ -825,6 +1121,58 @@ class _ExpenseFormState extends State<_ExpenseForm> {
       ),
     );
   }
+}
+
+class _WishEntryDialog extends StatefulWidget {
+  const _WishEntryDialog();
+
+  @override
+  State<_WishEntryDialog> createState() => _WishEntryDialogState();
+}
+
+class _WishEntryDialogState extends State<_WishEntryDialog> {
+  final _formKey = GlobalKey<FormState>();
+  final _controller = TextEditingController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('Novo desejo de compra'),
+    content: Form(
+      key: _formKey,
+      child: TextFormField(
+        controller: _controller,
+        autofocus: true,
+        textCapitalization: TextCapitalization.sentences,
+        decoration: const InputDecoration(
+          labelText: 'O que você quer comprar?',
+          hintText: 'Ex.: um fone novo',
+        ),
+        validator: (value) => value == null || value.trim().isEmpty
+            ? 'Informe o item desejado.'
+            : null,
+      ),
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: const Text('Cancelar'),
+      ),
+      FilledButton(
+        onPressed: () {
+          if (_formKey.currentState!.validate()) {
+            Navigator.pop(context, _controller.text.trim());
+          }
+        },
+        child: const Text('Iniciar 72 horas'),
+      ),
+    ],
+  );
 }
 
 class _BudgetEditorDialog extends StatefulWidget {
@@ -1113,6 +1461,14 @@ double? _parseAmount(String input) {
     normalized = normalized.replaceAll('.', '');
   }
   return double.tryParse(normalized);
+}
+
+String _formatCarbon(double kg) => kg.toStringAsFixed(2).replaceAll('.', ',');
+
+String _formatRemaining(Duration duration) {
+  final hours = duration.inHours;
+  final minutes = duration.inMinutes.remainder(60);
+  return '${hours}h ${minutes}min';
 }
 
 String _formatCurrency(double amount) =>
