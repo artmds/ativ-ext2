@@ -1,14 +1,23 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
+import 'package:hive_ce_flutter/hive_flutter.dart';
+import 'package:provider/provider.dart';
 
+import 'features/home/data/finance_repository.dart';
 import 'features/home/expense_dashboard.dart';
+import 'features/home/providers/finance_provider.dart';
 
-void main() {
-  runApp(const MyApp());
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Hive.initFlutter();
+  final repository = await HiveFinanceRepository.open();
+  runApp(MyApp(repository: repository));
 }
 
 class MyApp extends StatefulWidget {
-  const MyApp({super.key});
+  const MyApp({super.key, this.repository});
+
+  final FinanceRepository? repository;
 
   @override
   State<MyApp> createState() => _MyAppState();
@@ -69,21 +78,26 @@ class _MyAppState extends State<MyApp> {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Raiz - Consumo Consciente',
-      debugShowCheckedModeBanner: false,
-      theme: _buildTheme(Brightness.light),
-      darkTheme: _buildTheme(Brightness.dark),
-      themeMode: _themeMode,
-      localizationsDelegates: const [
-        GlobalMaterialLocalizations.delegate,
-        GlobalWidgetsLocalizations.delegate,
-        GlobalCupertinoLocalizations.delegate,
-      ],
-      supportedLocales: const [Locale('pt', 'BR'), Locale('en')],
-      home: ExpenseDashboard(
-        isDarkMode: _themeMode == ThemeMode.dark,
-        onToggleTheme: _toggleTheme,
+    return ChangeNotifierProvider(
+      create: (_) =>
+          FinanceProvider(widget.repository ?? InMemoryFinanceRepository())
+            ..load(),
+      child: MaterialApp(
+        title: 'Raiz - Consumo Consciente',
+        debugShowCheckedModeBanner: false,
+        theme: _buildTheme(Brightness.light),
+        darkTheme: _buildTheme(Brightness.dark),
+        themeMode: _themeMode,
+        localizationsDelegates: const [
+          GlobalMaterialLocalizations.delegate,
+          GlobalWidgetsLocalizations.delegate,
+          GlobalCupertinoLocalizations.delegate,
+        ],
+        supportedLocales: const [Locale('pt', 'BR'), Locale('en')],
+        home: ExpenseDashboard(
+          isDarkMode: _themeMode == ThemeMode.dark,
+          onToggleTheme: _toggleTheme,
+        ),
       ),
     );
   }

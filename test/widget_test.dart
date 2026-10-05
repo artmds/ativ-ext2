@@ -85,23 +85,26 @@ void main() {
     await tester.pumpAndSettle();
 
     await tester.scrollUntilVisible(
-      find.text('Gastos por categoria'),
+      find.text('Gastos por Categoria'),
       300,
-      scrollable: find.byType(Scrollable).last,
+      scrollable: find.byType(Scrollable).first,
     );
+    await tester.pumpAndSettle();
     expect(find.byType(PieChart), findsOneWidget);
     await tester.scrollUntilVisible(
-      find.text('Necessidade x impulso'),
+      find.text('Necessidade x Impulso'),
       300,
-      scrollable: find.byType(Scrollable).last,
+      scrollable: find.byType(Scrollable).first,
     );
+    await tester.pumpAndSettle();
     expect(find.byType(BarChart), findsWidgets);
-    expect(find.text('Necessidade x impulso'), findsOneWidget);
+    expect(find.text('Necessidade x Impulso'), findsOneWidget);
     await tester.scrollUntilVisible(
       find.text('Pegada de carbono'),
       300,
-      scrollable: find.byType(Scrollable).last,
+      scrollable: find.byType(Scrollable).first,
     );
+    await tester.pumpAndSettle();
     expect(find.byType(BarChart), findsWidgets);
     expect(find.text('Pegada de carbono'), findsOneWidget);
   });
@@ -117,8 +120,9 @@ void main() {
     await tester.scrollUntilVisible(
       find.text('Dinheiro economizado com consumo consciente'),
       300,
-      scrollable: find.byType(Scrollable).last,
+      scrollable: find.byType(Scrollable).first,
     );
+    await tester.pumpAndSettle();
     await tester.tap(find.byTooltip('Registrar economia consciente'));
     await tester.pumpAndSettle();
     await tester.enterText(find.byType(TextFormField).first, '25,00');

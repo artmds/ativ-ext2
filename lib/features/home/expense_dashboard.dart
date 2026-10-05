@@ -1,21 +1,16 @@
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:provider/provider.dart';
 
-const _categories = <String>[
-  'Alimentação',
-  'Transporte',
-  'Moradia',
-  'Saúde',
-  'Lazer',
-  'Compras',
-  'Outros',
-];
+import 'domain/finance_models.dart';
+import 'domain/finance_rules.dart';
+import 'providers/finance_provider.dart';
+
+const _categories = expenseCategories;
 
 const _categoryIcons = <String, IconData>{
   'Alimentação': Icons.restaurant_outlined,
@@ -35,129 +30,9 @@ const _paymentMethods = <String>[
   'Transferência',
 ];
 
-const _carbonKgPerRealByCategory = <String, double>{
-  'Alimentação': 0.15,
-  'Transporte': 0.25,
-  'Moradia': 0.08,
-  'Saúde': 0.08,
-  'Lazer': 0.10,
-  'Compras': 0.18,
-  'Outros': 0.10,
-};
-
-const _defaultBudgets = <String, double>{
-  'Alimentação': 900,
-  'Transporte': 450,
-  'Moradia': 1600,
-  'Saúde': 300,
-  'Lazer': 350,
-  'Compras': 300,
-  'Outros': 250,
-};
-
-class _Expense {
-  const _Expense({
-    required this.id,
-    required this.amount,
-    required this.date,
-    required this.category,
-    required this.paymentMethod,
-    this.note = '',
-    this.isNecessary = true,
-    this.isSustainable = false,
-  });
-
-  final String id;
-  final double amount;
-  final DateTime date;
-  final String category;
-  final String paymentMethod;
-  final String note;
-  final bool isNecessary;
-  final bool isSustainable;
-
-  Map<String, Object> toJson() => {
-    'id': id,
-    'amount': amount,
-    'date': date.toIso8601String(),
-    'category': category,
-    'paymentMethod': paymentMethod,
-    'note': note,
-    'isNecessary': isNecessary,
-    'isSustainable': isSustainable,
-  };
-
-  factory _Expense.fromJson(Map<String, dynamic> json) => _Expense(
-    id: json['id'] as String,
-    amount: (json['amount'] as num).toDouble(),
-    date: DateTime.parse(json['date'] as String),
-    category: json['category'] as String,
-    paymentMethod: json['paymentMethod'] as String,
-    note: json['note'] as String? ?? '',
-    isNecessary: json['isNecessary'] as bool? ?? true,
-    isSustainable: json['isSustainable'] as bool? ?? false,
-  );
-}
-
-class _PurchaseWish {
-  const _PurchaseWish({
-    required this.id,
-    required this.title,
-    required this.createdAt,
-  });
-
-  final String id;
-  final String title;
-  final DateTime createdAt;
-
-  DateTime get availableAt => createdAt.add(const Duration(hours: 72));
-  bool get isAvailable => !DateTime.now().isBefore(availableAt);
-
-  Map<String, String> toJson() => {
-    'id': id,
-    'title': title,
-    'createdAt': createdAt.toIso8601String(),
-  };
-
-  factory _PurchaseWish.fromJson(Map<String, dynamic> json) => _PurchaseWish(
-    id: json['id'] as String,
-    title: json['title'] as String,
-    createdAt: DateTime.parse(json['createdAt'] as String),
-  );
-}
-
-class _ConsciousSaving {
-  const _ConsciousSaving({
-    required this.id,
-    required this.amount,
-    required this.description,
-    required this.type,
-    required this.date,
-  });
-
-  final String id;
-  final double amount;
-  final String description;
-  final String type;
-  final DateTime date;
-
-  Map<String, Object> toJson() => {
-    'id': id,
-    'amount': amount,
-    'description': description,
-    'type': type,
-    'date': date.toIso8601String(),
-  };
-
-  factory _ConsciousSaving.fromJson(Map<String, dynamic> json) =>
-      _ConsciousSaving(
-        id: json['id'] as String,
-        amount: (json['amount'] as num).toDouble(),
-        description: json['description'] as String,
-        type: json['type'] as String,
-        date: DateTime.parse(json['date'] as String),
-      );
-}
+typedef _Expense = Expense;
+typedef _PurchaseWish = PurchaseWish;
+typedef _ConsciousSaving = ConsciousSaving;
 
 class ExpenseDashboard extends StatefulWidget {
   const ExpenseDashboard({
@@ -174,24 +49,19 @@ class ExpenseDashboard extends StatefulWidget {
 }
 
 class _ExpenseDashboardState extends State<ExpenseDashboard> {
-  static const _expensesKey = 'raiz.expenses.v1';
-  static const _budgetsKey = 'raiz.budgets.v1';
-  static const _wishesKey = 'raiz.purchase_wishes.v1';
-  static const _savingsKey = 'raiz.conscious_savings.v1';
-
   final _notifications = FlutterLocalNotificationsPlugin();
-  final Map<String, double> _budgets = Map.of(_defaultBudgets);
-  List<_Expense> _expenses = [];
-  List<_PurchaseWish> _wishes = [];
-  List<_ConsciousSaving> _savings = [];
   int _selectedTab = 0;
-  bool _loading = true;
   Timer? _wishRefreshTimer;
+
+  FinanceProvider get _finance => context.read<FinanceProvider>();
+  List<_Expense> get _expenses => _finance.expenses;
+  List<_PurchaseWish> get _wishes => _finance.wishes;
+  List<_ConsciousSaving> get _savings => _finance.savings;
+  Map<String, double> get _budgets => _finance.budgets;
 
   @override
   void initState() {
     super.initState();
-    _loadData();
     _initializeNotifications();
     _wishRefreshTimer = Timer.periodic(const Duration(minutes: 1), (_) {
       if (mounted && _selectedTab == 3) setState(() {});
@@ -202,47 +72,6 @@ class _ExpenseDashboardState extends State<ExpenseDashboard> {
   void dispose() {
     _wishRefreshTimer?.cancel();
     super.dispose();
-  }
-
-  Future<void> _loadData() async {
-    try {
-      final preferences = SharedPreferencesAsync();
-      final expensesJson = await preferences.getString(_expensesKey);
-      final budgetsJson = await preferences.getString(_budgetsKey);
-      final wishesJson = await preferences.getString(_wishesKey);
-      final savingsJson = await preferences.getString(_savingsKey);
-      if (expensesJson != null) {
-        final decoded = jsonDecode(expensesJson) as List<dynamic>;
-        _expenses = decoded
-            .map((item) => _Expense.fromJson(item as Map<String, dynamic>))
-            .toList();
-      }
-      if (budgetsJson != null) {
-        final decoded = jsonDecode(budgetsJson) as Map<String, dynamic>;
-        for (final entry in decoded.entries) {
-          if (_categories.contains(entry.key)) {
-            _budgets[entry.key] = (entry.value as num).toDouble();
-          }
-        }
-      }
-      if (wishesJson != null) {
-        final decoded = jsonDecode(wishesJson) as List<dynamic>;
-        _wishes = decoded
-            .map((item) => _PurchaseWish.fromJson(item as Map<String, dynamic>))
-            .toList();
-      }
-      if (savingsJson != null) {
-        final decoded = jsonDecode(savingsJson) as List<dynamic>;
-        _savings = decoded
-            .map(
-              (item) => _ConsciousSaving.fromJson(item as Map<String, dynamic>),
-            )
-            .toList();
-      }
-    } catch (_) {
-      // Storage may be unavailable in preview or test environments.
-    }
-    if (mounted) setState(() => _loading = false);
   }
 
   Future<void> _initializeNotifications() async {
@@ -273,76 +102,46 @@ class _ExpenseDashboardState extends State<ExpenseDashboard> {
     }
   }
 
-  Future<void> _persistData() async {
-    try {
-      final preferences = SharedPreferencesAsync();
-      await preferences.setString(
-        _expensesKey,
-        jsonEncode(_expenses.map((expense) => expense.toJson()).toList()),
-      );
-      await preferences.setString(_budgetsKey, jsonEncode(_budgets));
-      await preferences.setString(
-        _wishesKey,
-        jsonEncode(_wishes.map((wish) => wish.toJson()).toList()),
-      );
-      await preferences.setString(
-        _savingsKey,
-        jsonEncode(_savings.map((saving) => saving.toJson()).toList()),
-      );
-    } catch (_) {
-      if (mounted) _showMessage('Não foi possível salvar neste dispositivo.');
-    }
-  }
+  double _spentInCategory(String category) =>
+      FinanceRules.spentInCategory(_expenses, category, month: DateTime.now());
 
-  double _spentInCategory(String category) => _expenses
-      .where(
-        (expense) =>
-            expense.category == category && _isCurrentMonth(expense.date),
-      )
-      .fold(0, (total, expense) => total + expense.amount);
+  double get _spentThisMonth =>
+      FinanceRules.total(_expenses.where((expense) => _isCurrentMonth(expense.date)).map((expense) => expense.amount));
 
-  double get _spentThisMonth => _expenses
-      .where((expense) => _isCurrentMonth(expense.date))
-      .fold(0, (total, expense) => total + expense.amount);
-
-  double get _carbonThisMonth => _expenses
-      .where((expense) => _isCurrentMonth(expense.date))
-      .fold(0, (total, expense) => total + _estimateCarbonKg(expense));
+  double get _carbonThisMonth =>
+      FinanceRules.carbonInMonth(_expenses, DateTime.now());
 
   double get _carbonLastMonth {
     final now = DateTime.now();
     final startOfLastMonth = DateTime(now.year, now.month - 1);
     final startOfThisMonth = DateTime(now.year, now.month);
-    return _expenses
-        .where(
-          (expense) =>
-              !expense.date.isBefore(startOfLastMonth) &&
-              expense.date.isBefore(startOfThisMonth),
-        )
-        .fold(0, (total, expense) => total + _estimateCarbonKg(expense));
+    final lastMonth = _expenses.where(
+      (expense) =>
+          !expense.date.isBefore(startOfLastMonth) &&
+          expense.date.isBefore(startOfThisMonth),
+    );
+    return FinanceRules.total(lastMonth.map(FinanceRules.carbonKg));
   }
 
-  double get _consciousSavingsThisMonth => _savings
-      .where((saving) => _isCurrentMonth(saving.date))
-      .fold(0, (total, saving) => total + saving.amount);
+  double get _consciousSavingsThisMonth =>
+      FinanceRules.savingsInMonth(_savings, DateTime.now());
 
-  double get _totalBudget =>
-      _budgets.values.fold(0, (total, value) => total + value);
+  double get _totalBudget => FinanceRules.total(_budgets.values);
 
-  bool _isCurrentMonth(DateTime date) {
-    final now = DateTime.now();
-    return date.year == now.year && date.month == now.month;
-  }
+  bool _isCurrentMonth(DateTime date) =>
+      FinanceRules.isInMonth(date, DateTime.now());
 
-  double _estimateCarbonKg(_Expense expense) {
-    final factor = _carbonKgPerRealByCategory[expense.category] ?? 0.10;
-    return expense.amount * factor * (expense.isSustainable ? 0.1 : 1);
-  }
+  double _estimateCarbonKg(_Expense expense) => FinanceRules.carbonKg(expense);
 
-  Future<void> _addExpense(_Expense expense) async {
+  Future<bool> _addExpense(_Expense expense) async {
     final previousSpent = _spentInCategory(expense.category);
-    setState(() => _expenses = [expense, ..._expenses]);
-    await _persistData();
+    try {
+      await _finance.addExpense(expense);
+    } catch (error, stackTrace) {
+      debugPrint('Failed to persist expense: $error\n$stackTrace');
+      if (mounted) _showMessage('Não foi possível salvar o gasto.');
+      return false;
+    }
 
     final budget = _budgets[expense.category] ?? 0;
     final newSpent = previousSpent + expense.amount;
@@ -352,6 +151,7 @@ class _ExpenseDashboardState extends State<ExpenseDashboard> {
     if (budget > 0 && previousSpent < budget && newSpent >= budget) {
       await _sendBudgetAlert(expense.category, reachedLimit: true);
     }
+    return true;
   }
 
   Future<void> _addWish(String title) async {
@@ -361,13 +161,21 @@ class _ExpenseDashboardState extends State<ExpenseDashboard> {
       title: title,
       createdAt: now,
     );
-    setState(() => _wishes = [wish, ..._wishes]);
-    await _persistData();
+    try {
+      await _finance.addWish(wish);
+    } catch (error, stackTrace) {
+      debugPrint('Failed to persist purchase wish: $error\n$stackTrace');
+      if (mounted) _showMessage('Não foi possível salvar o desejo.');
+    }
   }
 
   Future<void> _removeWish(_PurchaseWish wish) async {
-    setState(() => _wishes.removeWhere((item) => item.id == wish.id));
-    await _persistData();
+    try {
+      await _finance.removeWish(wish.id);
+    } catch (error, stackTrace) {
+      debugPrint('Failed to remove purchase wish: $error\n$stackTrace');
+      if (mounted) _showMessage('Não foi possível remover o desejo.');
+    }
   }
 
   Future<void> _showWishForm() async {
@@ -386,13 +194,21 @@ class _ExpenseDashboardState extends State<ExpenseDashboard> {
       builder: (_) => const _SavingEntryDialog(),
     );
     if (saving == null || !mounted) return;
-    setState(() => _savings = [saving, ..._savings]);
-    await _persistData();
+    try {
+      await _finance.addSaving(saving);
+    } catch (error, stackTrace) {
+      debugPrint('Failed to persist conscious saving: $error\n$stackTrace');
+      if (mounted) _showMessage('Não foi possível salvar a economia.');
+    }
   }
 
   Future<void> _removeSaving(_ConsciousSaving saving) async {
-    setState(() => _savings.removeWhere((item) => item.id == saving.id));
-    await _persistData();
+    try {
+      await _finance.removeSaving(saving.id);
+    } catch (error, stackTrace) {
+      debugPrint('Failed to remove conscious saving: $error\n$stackTrace');
+      if (mounted) _showMessage('Não foi possível remover a economia.');
+    }
   }
 
   Future<void> _showExpenseForm({
@@ -408,8 +224,10 @@ class _ExpenseDashboardState extends State<ExpenseDashboard> {
       builder: (context) => _ExpenseForm(initialNote: initialNote),
     );
     if (expense != null) {
-      await _addExpense(expense);
-      if (wishToRegister != null) await _removeWish(wishToRegister);
+      final saved = await _addExpense(expense);
+      if (saved && wishToRegister != null) {
+        await _removeWish(wishToRegister);
+      }
     }
   }
 
@@ -471,8 +289,12 @@ class _ExpenseDashboardState extends State<ExpenseDashboard> {
       ),
     );
     if (saved == null || !mounted) return;
-    setState(() => _budgets[category] = saved);
-    await _persistData();
+    try {
+      await _finance.setBudget(category, saved);
+    } catch (error, stackTrace) {
+      debugPrint('Failed to persist budget: $error\n$stackTrace');
+      if (mounted) _showMessage('Não foi possível salvar o limite.');
+    }
   }
 
   void _showMessage(String message) {
@@ -483,6 +305,7 @@ class _ExpenseDashboardState extends State<ExpenseDashboard> {
 
   @override
   Widget build(BuildContext context) {
+    final finance = context.watch<FinanceProvider>();
     final pages = [
       _buildHome(),
       _buildStatement(),
@@ -526,8 +349,30 @@ class _ExpenseDashboardState extends State<ExpenseDashboard> {
           const SizedBox(width: 8),
         ],
       ),
-      body: _loading
+      body: finance.isLoading
           ? const Center(child: CircularProgressIndicator())
+          : finance.loadError != null
+          ? Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.storage_outlined, size: 42),
+                    const SizedBox(height: 12),
+                    const Text(
+                      'Não foi possível carregar os dados locais.',
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 12),
+                    FilledButton(
+                      onPressed: finance.load,
+                      child: const Text('Tentar novamente'),
+                    ),
+                  ],
+                ),
+              ),
+            )
           : IndexedStack(index: _selectedTab, children: pages),
       floatingActionButton: _selectedTab < 2
           ? FloatingActionButton.extended(
@@ -719,22 +564,19 @@ class _ExpenseDashboardState extends State<ExpenseDashboard> {
     final expensesThisMonth = _expenses
         .where((expense) => _isCurrentMonth(expense.date))
         .toList();
-    final categoryTotals = {
-      for (final category in _categories)
-        category: expensesThisMonth
-            .where((expense) => expense.category == category)
-            .fold<double>(0, (total, expense) => total + expense.amount),
-    };
-    final impulseTotal = expensesThisMonth
-        .where((expense) => !expense.isNecessary)
-        .fold<double>(0, (total, expense) => total + expense.amount);
-    final necessaryTotal = expensesThisMonth
-        .where((expense) => expense.isNecessary)
-        .fold<double>(0, (total, expense) => total + expense.amount);
-    final currentExpenses = expensesThisMonth.fold<double>(
-      0,
-      (total, expense) => total + expense.amount,
+    final categoryTotals = FinanceRules.totalsByCategory(
+      expensesThisMonth,
+      month: DateTime.now(),
     );
+    final impulseTotal = FinanceRules.expensesByNecessity(
+      expensesThisMonth,
+      necessary: false,
+    );
+    final necessaryTotal = FinanceRules.expensesByNecessity(
+      expensesThisMonth,
+      necessary: true,
+    );
+    final currentExpenses = FinanceRules.total(categoryTotals.values);
     final chartColors = [
       Theme.of(context).colorScheme.primary,
       Theme.of(context).colorScheme.secondary,
@@ -821,7 +663,7 @@ class _ExpenseDashboardState extends State<ExpenseDashboard> {
         ),
         const SizedBox(height: 20),
         _ReportChartCard(
-          title: 'Gastos por categoria',
+          title: 'Gastos por Categoria',
           subtitle: 'Distribuição dos gastos deste mês',
           child: currentExpenses == 0
               ? const _ChartEmptyState()
@@ -874,7 +716,7 @@ class _ExpenseDashboardState extends State<ExpenseDashboard> {
         ),
         const SizedBox(height: 14),
         _ReportChartCard(
-          title: 'Necessidade x impulso',
+          title: 'Necessidade x Impulso',
           subtitle: 'Valor em reais (R\$) classificado neste mês',
           child: expensesThisMonth.isEmpty
               ? const _ChartEmptyState()
@@ -1165,7 +1007,7 @@ class _ExpenseDashboardState extends State<ExpenseDashboard> {
         );
       } else {
         tips.add(
-          '${_formatPercent(sustainableShare)} dos seus gastos foram marcados como escolhas de menor pegada. Ótimo progresso — mantenha esse hábito.',
+          '${_formatPercent(sustainableShare)} dos seus gastos foram marcados como escolhas de menor pegada. Ótimo progresso, mantenha esse hábito.',
         );
       }
     } else {
@@ -1598,10 +1440,11 @@ class _ExpenseFormState extends State<_ExpenseForm> {
                         builder: (context) {
                           final amount =
                               _parseAmount(_amountController.text) ?? 0;
-                          final factor =
-                              _carbonKgPerRealByCategory[_category] ?? 0.10;
-                          final estimate =
-                              amount * factor * (_isSustainable ? 0.1 : 1);
+                          final estimate = FinanceRules.carbonEstimate(
+                            amount: amount,
+                            category: _category,
+                            isSustainable: _isSustainable,
+                          );
                           return Text(
                             'Pegada estimada: ${_formatCarbon(estimate)} kg CO₂e\n'
                             'Estimativa educativa por categoria e valor.',
