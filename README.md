@@ -1,17 +1,81 @@
-# ativ_ext2
+# Raiz — Consumo consciente
 
-A new Flutter project.
+Aplicativo Flutter para acompanhar gastos, hábitos de consumo e estimativas de
+impacto ambiental. Os dados ficam armazenados localmente no dispositivo com
+Hive CE, então o app pode ser usado offline.
 
-## Getting Started
+## Pré-requisitos
 
-This project is a starting point for a Flutter application.
+- Flutter **3.47.5** (Dart **3.13.4** ou compatível com a restrição do projeto).
+- Android Studio ou Android SDK configurado para compilar para Android.
+- Java/JDK 17 ou superior.
+- Um emulador Android ou dispositivo físico para executar o app.
 
-A few resources to get you started if this is your first Flutter project:
+No Windows, para compilar plugins Flutter que usam links simbólicos, habilite
+o **Modo de Desenvolvedor** em Configurações do Windows.
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+## Configurar o Android SDK
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+Instale o Android SDK pelo Android Studio ou pelo Android command-line tools.
+O projeto usa Android API 36 e NDK `28.2.13676358`. Se estiver instalando os
+componentes manualmente, use o `sdkmanager` da instalação do SDK:
+
+```powershell
+$env:ANDROID_HOME = "C:\Users\<usuario>\AppData\Local\Android\Sdk"
+$env:ANDROID_SDK_ROOT = $env:ANDROID_HOME
+$sdkmanager = Join-Path $env:ANDROID_SDK_ROOT "cmdline-tools\latest\bin\sdkmanager.bat"
+
+& $sdkmanager --sdk_root="$env:ANDROID_SDK_ROOT" `
+  "platform-tools" `
+  "platforms;android-36" `
+  "build-tools;36.0.0" `
+  "ndk;28.2.13676358" `
+  "cmdline-tools;latest"
+
+flutter config --android-sdk "$env:ANDROID_SDK_ROOT"
+flutter doctor --android-licenses
+flutter doctor
+```
+
+Aceite os termos apresentados pelo comando de licenças. No Android Studio,
+também é possível instalar esses pacotes em **SDK Manager > SDK Platforms /
+SDK Tools**. Não versione `android/local.properties`: ele contém caminhos
+locais da instalação do Flutter e do Android SDK.
+
+## Baixar dependências e executar
+
+Na pasta raiz do repositório:
+
+```powershell
+flutter pub get
+flutter devices
+flutter run -d <device-id>
+```
+
+`flutter devices` lista os emuladores e dispositivos disponíveis. Para usar um
+celular via USB, habilite as opções de desenvolvedor e a depuração USB no
+aparelho e autorize a conexão quando solicitado. Também é possível iniciar o
+app no dispositivo padrão com `flutter run`.
+
+Para executar os testes e verificar o código:
+
+```powershell
+flutter test
+flutter analyze
+```
+
+## Gerar APK para validação
+
+```powershell
+flutter build apk --release
+```
+
+O APK fica em:
+
+```text
+build/app/outputs/flutter-apk/app-release.apk
+```
+
+O build release deste projeto usa a assinatura de debug configurada no Gradle,
+adequada para validação local em dispositivos físicos, mas não para publicar
+na Google Play Store.
