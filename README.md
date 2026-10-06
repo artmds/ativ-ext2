@@ -1,6 +1,6 @@
-# Raiz — Consumo consciente
+# Diário de consumo consciente
 
-Aplicativo Flutter para acompanhar gastos, hábitos de consumo e estimativas de
+App em Flutter para acompanhar gastos, hábitos de consumo e estimativas de
 impacto ambiental. Os dados ficam armazenados localmente no dispositivo com
 Hive CE, então o app pode ser usado offline.
 
